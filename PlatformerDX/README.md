@@ -10,6 +10,7 @@ A small 2D platformer final-project game built with C++ and Direct2D, part of th
 - Coins, checkpoint respawn, enemies, spikes, moving platforms, and a locked exit
 - Three rounds with different colors, layouts, and increasing enemy speed
 - Round timer with per-round best-time tracking
+- Saved best total completion time (`best_time.txt`)
 - Text level loading from `levels/level1.txt`
 - Camera follow and HUD
 
@@ -26,6 +27,7 @@ A small 2D platformer final-project game built with C++ and Direct2D, part of th
 
 ## Controls
 
+- Mouse: pick character color and click `Start Game` on the start screen
 - `A` / `D` or Left / Right: move
 - `Space`, `W`, or Up: jump; press again in the air to double jump
 - `R`: restart after game over or win

@@ -4,6 +4,8 @@
 #endif
 
 #include <windows.h>
+#include <windowsx.h>
+#include <mmsystem.h>
 #include <d2d1.h>
 #include <dwrite.h>
 #include <wrl/client.h>
@@ -12,12 +14,14 @@
 #include <chrono>
 #include <cmath>
 #include <fstream>
+#include <iomanip>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #pragma comment(lib, "d2d1")
 #pragma comment(lib, "dwrite")
+#pragma comment(lib, "winmm")
 
 using Microsoft::WRL::ComPtr;
 
@@ -45,6 +49,12 @@ namespace
         float w = 0.0f;
         float h = 0.0f;
     };
+
+    bool Contains(const Rect& r, float px, float py)
+    {
+        return px >= r.x && px <= r.x + r.w &&
+            py >= r.y && py <= r.y + r.h;
+    }
 
     bool Intersects(const Rect& a, const Rect& b)
     {
@@ -94,6 +104,14 @@ namespace
         int coins = 0;
     };
 
+    struct JumpParticle
+    {
+        Vec2 pos;
+        Vec2 velocity;
+        float life = 0.0f;
+        float maxLife = 0.0f;
+    };
+
     struct RoundStyle
     {
         UINT32 sky;
@@ -134,7 +152,9 @@ namespace
             }
 
             firstRoundRows = loaded;
+            LoadBestScore();
             LoadRound(0);
+            state = State::Menu;
         }
 
         void LoadRound(int index)
@@ -230,6 +250,8 @@ namespace
             player.velocity = {};
             player.onGround = false;
             player.jumpsUsed = 0;
+            jumpParticles.clear();
+            jumpAnimTimer = 0.0f;
             state = State::Playing;
         }
 
@@ -238,7 +260,34 @@ namespace
             player.lives = 3;
             player.coins = 0;
             currentRound = 0;
+            totalRunTime = 0.0f;
+            finalCompletionTime = -1.0f;
             LoadRound(0);
+        }
+
+        void HandleClick(float screenX, float screenY)
+        {
+            if (state != State::Menu)
+            {
+                return;
+            }
+
+            if (Contains(StartButtonRect(), screenX, screenY))
+            {
+                RestartAll();
+                state = State::Playing;
+                return;
+            }
+
+            const auto swatches = ColorSwatches();
+            for (int i = 0; i < static_cast<int>(swatches.size()); ++i)
+            {
+                if (Contains(swatches[i], screenX, screenY))
+                {
+                    selectedPlayerColor = i;
+                    return;
+                }
+            }
         }
 
         void RestartCurrentRound()
@@ -271,6 +320,11 @@ namespace
         {
             elapsed += dt;
 
+            if (state == State::Menu)
+            {
+                return;
+            }
+
             if (state != State::Playing)
             {
                 if (Pressed(keys, 'R'))
@@ -281,6 +335,9 @@ namespace
             }
 
             roundTime += dt;
+            totalRunTime += dt;
+            jumpAnimTimer = std::max(0.0f, jumpAnimTimer - dt);
+            UpdateJumpParticles(dt);
             float direction = 0.0f;
             if (Down(keys, 'A') || Down(keys, VK_LEFT))
             {
@@ -299,6 +356,7 @@ namespace
                 player.velocity.y = JumpVelocity;
                 player.onGround = false;
                 ++player.jumpsUsed;
+                TriggerJumpEffects();
             }
 
             player.velocity.y = std::min(player.velocity.y + Gravity * dt, 1200.0f);
@@ -340,6 +398,7 @@ namespace
             DrawCheckpoints(target, brush);
             DrawCoins(target, brush);
             DrawEnemies(target, brush);
+            DrawJumpParticles(target, brush);
             DrawPlayer(target, brush);
             DrawHud(target, textFormat, brush);
         }
@@ -347,6 +406,7 @@ namespace
     private:
         enum class State
         {
+            Menu,
             Playing,
             GameOver,
             Won
@@ -359,6 +419,7 @@ namespace
         std::vector<Rect> spikes;
         std::vector<Checkpoint> checkpoints;
         std::vector<MovingPlatform> movingPlatforms;
+        std::vector<JumpParticle> jumpParticles;
         Player player;
         Rect exitRect;
         Vec2 initialSpawn;
@@ -369,12 +430,106 @@ namespace
         int currentRound = 0;
         float elapsed = 0.0f;
         float roundTime = 0.0f;
+        float totalRunTime = 0.0f;
+        float finalCompletionTime = -1.0f;
+        float jumpAnimTimer = 0.0f;
         float bestRoundTimes[3] = { -1.0f, -1.0f, -1.0f };
-        State state = State::Playing;
+        float bestGameTime = -1.0f;
+        int selectedPlayerColor = 0;
+        State state = State::Menu;
 
         float RoundEnemySpeed() const
         {
             return EnemySpeed + currentRound * 45.0f;
+        }
+
+        Rect StartButtonRect() const
+        {
+            return { WindowWidth * 0.5f - 150.0f, 470.0f, 300.0f, 72.0f };
+        }
+
+        std::vector<UINT32> PlayerPalette() const
+        {
+            return { 0x38BDF8, 0xF97316, 0x22C55E, 0xE879F9, 0xFACC15 };
+        }
+
+        std::vector<Rect> ColorSwatches() const
+        {
+            std::vector<Rect> swatches;
+            const float startX = WindowWidth * 0.5f - 190.0f;
+            for (int i = 0; i < 5; ++i)
+            {
+                swatches.push_back({ startX + i * 82.0f, 360.0f, 54.0f, 54.0f });
+            }
+            return swatches;
+        }
+
+        std::wstring BestScorePath() const
+        {
+            return L"best_time.txt";
+        }
+
+        void LoadBestScore()
+        {
+            std::ifstream file(BestScorePath());
+            float loadedTime = -1.0f;
+            if (file >> loadedTime && loadedTime > 0.0f)
+            {
+                bestGameTime = loadedTime;
+            }
+        }
+
+        void SaveBestScore() const
+        {
+            if (bestGameTime <= 0.0f)
+            {
+                return;
+            }
+
+            std::ofstream file(BestScorePath(), std::ios::trunc);
+            if (!file)
+            {
+                return;
+            }
+
+            file << std::fixed << std::setprecision(2) << bestGameTime;
+        }
+
+        void TriggerJumpEffects()
+        {
+            jumpAnimTimer = 0.22f;
+
+            const float centerX = player.body.x + player.body.w * 0.5f;
+            const float baseY = player.body.y + player.body.h - 4.0f;
+            for (int i = 0; i < 8; ++i)
+            {
+                const float spread = static_cast<float>(i - 3) / 3.5f;
+                jumpParticles.push_back({
+                    { centerX + spread * 12.0f, baseY },
+                    { spread * 95.0f, -120.0f - std::abs(spread) * 70.0f },
+                    0.34f,
+                    0.34f
+                });
+            }
+
+            PlaySoundW(L"SystemAsterisk", nullptr, SND_ALIAS | SND_ASYNC | SND_NODEFAULT);
+        }
+
+        void UpdateJumpParticles(float dt)
+        {
+            for (auto& particle : jumpParticles)
+            {
+                particle.life -= dt;
+                particle.pos.x += particle.velocity.x * dt;
+                particle.pos.y += particle.velocity.y * dt;
+                particle.velocity.y += 520.0f * dt;
+            }
+
+            jumpParticles.erase(std::remove_if(jumpParticles.begin(), jumpParticles.end(),
+                [](const JumpParticle& particle)
+                {
+                    return particle.life <= 0.0f;
+                }), jumpParticles.end());
         }
 
         RoundStyle Style() const
@@ -760,6 +915,12 @@ namespace
             RecordBestTime();
             if (currentRound + 1 >= RoundCount())
             {
+                finalCompletionTime = totalRunTime;
+                if (bestGameTime < 0.0f || finalCompletionTime < bestGameTime)
+                {
+                    bestGameTime = finalCompletionTime;
+                    SaveBestScore();
+                }
                 state = State::Won;
                 return;
             }
@@ -797,6 +958,71 @@ namespace
 
             brush->SetColor(D2D1::ColorF(style.ground));
             target->FillRectangle(D2D1::RectF(0, WindowHeight - 52.0f, WindowWidth, WindowHeight), brush);
+        }
+
+        void DrawMenu(ID2D1HwndRenderTarget* target, IDWriteTextFormat* textFormat, ID2D1SolidColorBrush* brush)
+        {
+            textFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            brush->SetColor(D2D1::ColorF(0x0B1020));
+            target->FillRectangle(D2D1::RectF(0, 0, WindowWidth, WindowHeight), brush);
+
+            brush->SetColor(D2D1::ColorF(0x1D4ED8, 0.25f));
+            target->FillEllipse(D2D1::Ellipse(D2D1::Point2F(260.0f, 180.0f), 220.0f, 120.0f), brush);
+            brush->SetColor(D2D1::ColorF(0xF97316, 0.22f));
+            target->FillEllipse(D2D1::Ellipse(D2D1::Point2F(980.0f, 540.0f), 260.0f, 140.0f), brush);
+
+            brush->SetColor(D2D1::ColorF(0xF8FAFC));
+            const std::wstring title = L"PlatformerDX";
+            target->DrawTextW(title.c_str(), static_cast<UINT32>(title.size()), textFormat,
+                D2D1::RectF(390.0f, 120.0f, 920.0f, 180.0f), brush);
+
+            const std::wstring subtitle = L"Choose your character color and start the game";
+            target->DrawTextW(subtitle.c_str(), static_cast<UINT32>(subtitle.size()), textFormat,
+                D2D1::RectF(260.0f, 185.0f, 1020.0f, 235.0f), brush);
+
+            std::wstringstream bestScoreText;
+            bestScoreText.setf(std::ios::fixed);
+            bestScoreText.precision(1);
+            if (bestGameTime > 0.0f)
+            {
+                bestScoreText << L"Best total time: " << bestGameTime << L" seconds";
+            }
+            else
+            {
+                bestScoreText << L"Best total time: no score yet";
+            }
+            const std::wstring bestText = bestScoreText.str();
+            target->DrawTextW(bestText.c_str(), static_cast<UINT32>(bestText.size()), textFormat,
+                D2D1::RectF(280.0f, 225.0f, 1000.0f, 275.0f), brush);
+
+            Rect preview = { WindowWidth * 0.5f - 30.0f, 250.0f, 60.0f, 80.0f };
+            brush->SetColor(D2D1::ColorF(PlayerPalette()[selectedPlayerColor]));
+            target->FillRoundedRectangle(D2D1::RoundedRect(ToD2D(preview, {}), 8.0f, 8.0f), brush);
+            brush->SetColor(D2D1::ColorF(0x0F172A));
+            target->FillEllipse(D2D1::Ellipse(D2D1::Point2F(preview.x + 40.0f, preview.y + 22.0f), 4.0f, 4.0f), brush);
+
+            const auto palette = PlayerPalette();
+            const auto swatches = ColorSwatches();
+            for (int i = 0; i < static_cast<int>(swatches.size()); ++i)
+            {
+                brush->SetColor(D2D1::ColorF(palette[i]));
+                target->FillRoundedRectangle(D2D1::RoundedRect(ToD2D(swatches[i], {}), 8.0f, 8.0f), brush);
+                brush->SetColor(i == selectedPlayerColor ? D2D1::ColorF(0xFFFFFF) : D2D1::ColorF(0x334155));
+                target->DrawRoundedRectangle(D2D1::RoundedRect(ToD2D(swatches[i], {}), 8.0f, 8.0f), brush,
+                    i == selectedPlayerColor ? 4.0f : 2.0f);
+            }
+
+            const Rect button = StartButtonRect();
+            brush->SetColor(D2D1::ColorF(0x22C55E));
+            target->FillRoundedRectangle(D2D1::RoundedRect(ToD2D(button, {}), 12.0f, 12.0f), brush);
+            brush->SetColor(D2D1::ColorF(0xDCFCE7));
+            target->DrawRoundedRectangle(D2D1::RoundedRect(ToD2D(button, {}), 12.0f, 12.0f), brush, 3.0f);
+
+            const std::wstring buttonText = L"Start Game";
+            brush->SetColor(D2D1::ColorF(0x052E16));
+            target->DrawTextW(buttonText.c_str(), static_cast<UINT32>(buttonText.size()), textFormat,
+                D2D1::RectF(button.x, button.y + 16.0f, button.x + button.w, button.y + button.h), brush);
+            textFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         }
 
         void DrawTiles(ID2D1HwndRenderTarget* target, ID2D1SolidColorBrush* brush)
@@ -863,6 +1089,21 @@ namespace
                 brush->SetColor(D2D1::ColorF(0xFFFBEB));
                 Rect stripe = { platform.body.x + 8.0f, platform.body.y + 4.0f, platform.body.w - 16.0f, 3.0f };
                 target->FillRectangle(ToD2D(stripe, camera), brush);
+            }
+        }
+
+        void DrawJumpParticles(ID2D1HwndRenderTarget* target, ID2D1SolidColorBrush* brush)
+        {
+            for (const auto& particle : jumpParticles)
+            {
+                const float alpha = std::max(0.0f, particle.life / particle.maxLife);
+                brush->SetColor(D2D1::ColorF(0xE0F2FE, alpha));
+                target->FillEllipse(
+                    D2D1::Ellipse(
+                        D2D1::Point2F(particle.pos.x - camera.x, particle.pos.y - camera.y),
+                        4.0f + (1.0f - alpha) * 3.0f,
+                        4.0f + (1.0f - alpha) * 3.0f),
+                    brush);
             }
         }
 
@@ -933,16 +1174,56 @@ namespace
 
         void DrawPlayer(ID2D1HwndRenderTarget* target, ID2D1SolidColorBrush* brush)
         {
-            brush->SetColor(player.onGround ? D2D1::ColorF(0x38BDF8) : D2D1::ColorF(0x7DD3FC));
-            target->FillRoundedRectangle(D2D1::RoundedRect(ToD2D(player.body, camera), 6.0f, 6.0f), brush);
+            const auto palette = PlayerPalette();
+            const UINT32 bodyColor = palette[selectedPlayerColor];
+            Rect drawBody = player.body;
+            if (!player.onGround)
+            {
+                drawBody.x += 2.5f;
+                drawBody.w -= 5.0f;
+                drawBody.h += 3.0f;
+            }
+            if (jumpAnimTimer > 0.0f)
+            {
+                const float stretch = jumpAnimTimer / 0.22f;
+                drawBody.x -= 2.0f * stretch;
+                drawBody.w += 4.0f * stretch;
+                drawBody.h -= 5.0f * stretch;
+                drawBody.y += 5.0f * stretch;
+            }
+
+            brush->SetColor(player.onGround ? D2D1::ColorF(bodyColor) : D2D1::ColorF(bodyColor, 0.82f));
+            target->FillRoundedRectangle(D2D1::RoundedRect(ToD2D(drawBody, camera), 6.0f, 6.0f), brush);
+
+            if (!player.onGround)
+            {
+                const float sway = std::sin(elapsed * 18.0f) * 3.0f;
+                brush->SetColor(D2D1::ColorF(bodyColor, 0.25f));
+                target->DrawLine(
+                    D2D1::Point2F(player.body.x - 6.0f - camera.x, player.body.y + 24.0f - camera.y),
+                    D2D1::Point2F(player.body.x - 18.0f - camera.x, player.body.y + 12.0f + sway - camera.y),
+                    brush, 4.0f);
+                target->DrawLine(
+                    D2D1::Point2F(player.body.x + player.body.w + 6.0f - camera.x, player.body.y + 24.0f - camera.y),
+                    D2D1::Point2F(player.body.x + player.body.w + 18.0f - camera.x, player.body.y + 12.0f - sway - camera.y),
+                    brush, 4.0f);
+            }
 
             brush->SetColor(D2D1::ColorF(0x0F172A));
             const float eyeOffset = player.velocity.x >= 0.0f ? 22.0f : 9.0f;
-            target->FillEllipse(D2D1::Ellipse(D2D1::Point2F(player.body.x + eyeOffset - camera.x, player.body.y + 14.0f - camera.y), 4.0f, 4.0f), brush);
+            const float eyeY = !player.onGround ? 12.0f : 14.0f;
+            target->FillEllipse(D2D1::Ellipse(
+                D2D1::Point2F(drawBody.x + eyeOffset - camera.x, drawBody.y + eyeY - camera.y), 4.0f, 4.0f), brush);
         }
 
         void DrawHud(ID2D1HwndRenderTarget* target, IDWriteTextFormat* textFormat, ID2D1SolidColorBrush* brush)
         {
+            if (state == State::Menu)
+            {
+                DrawMenu(target, textFormat, brush);
+                return;
+            }
+
             std::wstringstream hud;
             hud << L"Round: " << currentRound + 1 << L"/" << RoundCount()
                 << L"    Lives: " << player.lives
@@ -958,6 +1239,7 @@ namespace
             timer.setf(std::ios::fixed);
             timer.precision(1);
             timer << L"Time: " << roundTime << L"s";
+            timer << L"    Total: " << totalRunTime << L"s";
             if (bestRoundTimes[currentRound] >= 0.0f)
             {
                 timer << L"    Best: " << bestRoundTimes[currentRound] << L"s";
@@ -977,8 +1259,17 @@ namespace
                 {
                     message.setf(std::ios::fixed);
                     message.precision(1);
-                    message << L"You finished all rounds. Final round time: "
-                        << roundTime << L"s. Press R to restart.";
+                    message << L"You finished all rounds in " << finalCompletionTime
+                        << L"s. Best score: ";
+                    if (bestGameTime > 0.0f)
+                    {
+                        message << bestGameTime << L"s";
+                    }
+                    else
+                    {
+                        message << L"none";
+                    }
+                    message << L". Press R to restart.";
                 }
                 else
                 {
@@ -1171,6 +1462,10 @@ namespace
                 {
                     keys[wParam] = false;
                 }
+                return 0;
+            case WM_LBUTTONDOWN:
+                game.HandleClick(static_cast<float>(GET_X_LPARAM(lParam)),
+                    static_cast<float>(GET_Y_LPARAM(lParam)));
                 return 0;
             case WM_DESTROY:
                 PostQuitMessage(0);
