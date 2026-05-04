@@ -31,6 +31,7 @@ A small 2D platformer final-project game built with C++ and Direct2D, part of th
 - Mouse: pick character color and click `Start Game` on the start screen
 - `A` / `D` or Left / Right: move
 - `Space`, `W`, or Up: jump; press again in the air to double jump
+- `Enter`: shoot an energy ball
 - `R`: restart after game over or win
 - `Esc`: quit
 

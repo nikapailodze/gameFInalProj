@@ -112,6 +112,14 @@ namespace
         float maxLife = 0.0f;
     };
 
+    struct Projectile
+    {
+        Rect body;
+        float vx = 0.0f;
+        float life = 0.0f;
+        bool alive = true;
+    };
+
     struct RoundStyle
     {
         UINT32 sky;
@@ -186,6 +194,7 @@ namespace
             spikes.clear();
             checkpoints.clear();
             movingPlatforms.clear();
+            projectiles.clear();
             exitRect = {};
 
             Vec2 spawn = { TileSize * 2.0f, TileSize * 2.0f };
@@ -252,7 +261,9 @@ namespace
             player.onGround = false;
             player.jumpsUsed = 0;
             jumpParticles.clear();
+            projectiles.clear();
             jumpAnimTimer = 0.0f;
+            facingDir = 1;
             state = State::Playing;
         }
 
@@ -351,6 +362,14 @@ namespace
             }
 
             player.velocity.x = direction * MoveSpeed;
+            if (direction > 0.0f)
+            {
+                facingDir = 1;
+            }
+            else if (direction < 0.0f)
+            {
+                facingDir = -1;
+            }
 
             const bool jump = Pressed(keys, VK_SPACE) || Pressed(keys, 'W') || Pressed(keys, VK_UP);
             if (jump && player.jumpsUsed < 2)
@@ -361,6 +380,11 @@ namespace
                 TriggerJumpEffects();
             }
 
+            if (Pressed(keys, VK_RETURN))
+            {
+                FireProjectile();
+            }
+
             player.velocity.y = std::min(player.velocity.y + Gravity * dt, 1200.0f);
 
             UpdateMovingPlatforms(dt);
@@ -369,11 +393,12 @@ namespace
             MovePlayerY(player.velocity.y * dt);
             ResolveMovingPlatformLanding(previousBottom);
             UpdateEnemies(dt);
+            UpdateProjectiles(dt);
             CollectCoins();
             TouchCheckpoints();
             CheckHazards();
 
-            if (exitRect.w > 0.0f && AllCoinsCollected() && Intersects(player.body, exitRect))
+            if (exitRect.w > 0.0f && AllCoinsCollected() && AllEnemiesDefeated() && Intersects(player.body, exitRect))
             {
                 AdvanceRound();
             }
@@ -400,6 +425,7 @@ namespace
             DrawCheckpoints(target, brush);
             DrawCoins(target, brush);
             DrawEnemies(target, brush);
+            DrawProjectiles(target, brush);
             DrawJumpParticles(target, brush);
             DrawPlayer(target, brush);
             DrawHud(target, textFormat, brush);
@@ -423,6 +449,7 @@ namespace
         std::vector<Checkpoint> checkpoints;
         std::vector<MovingPlatform> movingPlatforms;
         std::vector<JumpParticle> jumpParticles;
+        std::vector<Projectile> projectiles;
         Player player;
         Rect exitRect;
         Vec2 initialSpawn;
@@ -440,6 +467,7 @@ namespace
         float bestRoundTimes[3] = { -1.0f, -1.0f, -1.0f };
         float bestGameTime = -1.0f;
         int selectedPlayerColor = 0;
+        int facingDir = 1;
         State state = State::Menu;
 
         float RoundEnemySpeed() const
@@ -566,6 +594,15 @@ namespace
                 {
                     return particle.life <= 0.0f;
                 }), jumpParticles.end());
+        }
+
+        void FireProjectile()
+        {
+            const float speed = 620.0f;
+            const float spawnX = facingDir > 0 ? player.body.x + player.body.w : player.body.x - 14.0f;
+            const float spawnY = player.body.y + 16.0f;
+            projectiles.push_back({ { spawnX, spawnY, 14.0f, 14.0f }, speed * static_cast<float>(facingDir), 1.2f, true });
+            PlaySoundW(L"SystemExclamation", nullptr, SND_ALIAS | SND_ASYNC | SND_NODEFAULT);
         }
 
         RoundStyle Style() const
@@ -868,6 +905,61 @@ namespace
             }
         }
 
+        void UpdateProjectiles(float dt)
+        {
+            for (auto& projectile : projectiles)
+            {
+                if (!projectile.alive)
+                {
+                    continue;
+                }
+
+                projectile.life -= dt;
+                projectile.body.x += projectile.vx * dt;
+                if (projectile.life <= 0.0f)
+                {
+                    projectile.alive = false;
+                    continue;
+                }
+
+                for (const Rect& tile : NearbySolidTiles(projectile.body))
+                {
+                    if (Intersects(projectile.body, tile))
+                    {
+                        projectile.alive = false;
+                        break;
+                    }
+                }
+
+                if (!projectile.alive)
+                {
+                    continue;
+                }
+
+                for (auto& enemy : enemies)
+                {
+                    if (!enemy.alive)
+                    {
+                        continue;
+                    }
+
+                    if (Intersects(projectile.body, enemy.body))
+                    {
+                        enemy.alive = false;
+                        projectile.alive = false;
+                        PlaySoundW(L"SystemHand", nullptr, SND_ALIAS | SND_ASYNC | SND_NODEFAULT);
+                        break;
+                    }
+                }
+            }
+
+            projectiles.erase(std::remove_if(projectiles.begin(), projectiles.end(),
+                [](const Projectile& projectile)
+                {
+                    return !projectile.alive;
+                }), projectiles.end());
+        }
+
         void CollectCoins()
         {
             for (auto& coin : coins)
@@ -967,6 +1059,31 @@ namespace
         bool AllCoinsCollected() const
         {
             return player.coins >= static_cast<int>(coins.size());
+        }
+
+        bool AllEnemiesDefeated() const
+        {
+            for (const auto& enemy : enemies)
+            {
+                if (enemy.alive)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        int LivingEnemyCount() const
+        {
+            int count = 0;
+            for (const auto& enemy : enemies)
+            {
+                if (enemy.alive)
+                {
+                    ++count;
+                }
+            }
+            return count;
         }
 
         void RecordBestTime()
@@ -1210,7 +1327,7 @@ namespace
 
             const auto rect = ToD2D(exitRect, camera);
             const RoundStyle style = Style();
-            const bool unlocked = AllCoinsCollected();
+            const bool unlocked = AllCoinsCollected() && AllEnemiesDefeated();
             brush->SetColor(unlocked ? D2D1::ColorF(style.exit) : D2D1::ColorF(0x475569));
             target->FillRoundedRectangle(D2D1::RoundedRect(rect, 8.0f, 8.0f), brush);
             brush->SetColor(unlocked ? D2D1::ColorF(style.exitGlow) : D2D1::ColorF(0xCBD5E1));
@@ -1231,6 +1348,29 @@ namespace
                 brush->SetColor(D2D1::ColorF(0x111827));
                 const float eyeX = enemy.vx > 0.0f ? enemy.body.x + 24.0f : enemy.body.x + 9.0f;
                 target->FillEllipse(D2D1::Ellipse(D2D1::Point2F(eyeX - camera.x, enemy.body.y + 14.0f - camera.y), 4.0f, 4.0f), brush);
+            }
+        }
+
+        void DrawProjectiles(ID2D1HwndRenderTarget* target, ID2D1SolidColorBrush* brush)
+        {
+            for (const auto& projectile : projectiles)
+            {
+                brush->SetColor(D2D1::ColorF(0xF8FAFC));
+                target->FillEllipse(
+                    D2D1::Ellipse(
+                        D2D1::Point2F(projectile.body.x + projectile.body.w * 0.5f - camera.x,
+                            projectile.body.y + projectile.body.h * 0.5f - camera.y),
+                        projectile.body.w * 0.5f,
+                        projectile.body.h * 0.5f),
+                    brush);
+                brush->SetColor(D2D1::ColorF(0x38BDF8));
+                target->DrawEllipse(
+                    D2D1::Ellipse(
+                        D2D1::Point2F(projectile.body.x + projectile.body.w * 0.5f - camera.x,
+                            projectile.body.y + projectile.body.h * 0.5f - camera.y),
+                        projectile.body.w * 0.5f,
+                        projectile.body.h * 0.5f),
+                    brush, 2.0f);
             }
         }
 
@@ -1272,7 +1412,7 @@ namespace
             }
 
             brush->SetColor(D2D1::ColorF(0x0F172A));
-            const float eyeOffset = player.velocity.x >= 0.0f ? 22.0f : 9.0f;
+            const float eyeOffset = facingDir >= 0 ? 22.0f : 9.0f;
             const float eyeY = !player.onGround ? 12.0f : 14.0f;
             target->FillEllipse(D2D1::Ellipse(
                 D2D1::Point2F(drawBody.x + eyeOffset - camera.x, drawBody.y + eyeY - camera.y), 4.0f, 4.0f), brush);
@@ -1290,7 +1430,8 @@ namespace
             hud << L"Round: " << currentRound + 1 << L"/" << RoundCount()
                 << L"    Lives: " << player.lives
                 << L"    Coins: " << player.coins << L"/" << coins.size()
-                << L"    Exit: " << (AllCoinsCollected() ? L"Unlocked" : L"Locked");
+                << L"    Enemies: " << LivingEnemyCount() << L"/" << enemies.size()
+                << L"    Exit: " << ((AllCoinsCollected() && AllEnemiesDefeated()) ? L"Unlocked" : L"Locked");
 
             brush->SetColor(D2D1::ColorF(0xF8FAFC));
             const std::wstring hudText = hud.str();
