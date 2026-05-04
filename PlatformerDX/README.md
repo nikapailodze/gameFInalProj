@@ -7,10 +7,22 @@ A small 2D platformer final-project game built with C++ and Direct2D, part of th
 - Direct2D rendering through a Win32 game window
 - Fixed-timestep game loop
 - Player movement, double jumping, gravity, and tile collision
-- Coins, checkpoint respawn, enemies, level exit, win/game-over states
+- Coins, checkpoint respawn, enemies, spikes, moving platforms, and a locked exit
 - Three rounds with different colors, layouts, and increasing enemy speed
+- Round timer with per-round best-time tracking
 - Text level loading from `levels/level1.txt`
 - Camera follow and HUD
+
+## Level Symbols
+
+- `#`: solid block
+- `P`: player spawn
+- `C`: coin
+- `E`: enemy
+- `K`: checkpoint
+- `^`: spike hazard
+- `M`: moving platform
+- `X`: exit door
 
 ## Controls
 

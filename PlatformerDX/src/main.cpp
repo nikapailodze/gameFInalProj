@@ -76,6 +76,14 @@ namespace
         bool alive = true;
     };
 
+    struct MovingPlatform
+    {
+        Rect body;
+        float minX = 0.0f;
+        float maxX = 0.0f;
+        float vx = 0.0f;
+    };
+
     struct Player
     {
         Rect body;
@@ -133,6 +141,7 @@ namespace
         {
             currentRound = std::clamp(index, 0, RoundCount() - 1);
             player.coins = 0;
+            roundTime = 0.0f;
             LoadRows(currentRound == 0 ? firstRoundRows : BuiltInRound(currentRound));
         }
 
@@ -153,7 +162,9 @@ namespace
 
             coins.clear();
             enemies.clear();
+            spikes.clear();
             checkpoints.clear();
+            movingPlatforms.clear();
             exitRect = {};
 
             Vec2 spawn = { TileSize * 2.0f, TileSize * 2.0f };
@@ -183,6 +194,21 @@ namespace
                     else if (tile == 'K')
                     {
                         checkpoints.push_back({ { pos.x + 10.0f, pos.y + 2.0f }, false });
+                        rows[y][x] = '.';
+                    }
+                    else if (tile == '^')
+                    {
+                        spikes.push_back({ pos.x + 4.0f, pos.y + 18.0f, TileSize - 8.0f, TileSize - 18.0f });
+                        rows[y][x] = '.';
+                    }
+                    else if (tile == 'M')
+                    {
+                        movingPlatforms.push_back({
+                            { pos.x, pos.y + 30.0f, TileSize, 14.0f },
+                            pos.x - TileSize * 2.0f,
+                            pos.x + TileSize * 2.0f,
+                            90.0f
+                        });
                         rows[y][x] = '.';
                     }
                     else if (tile == 'X')
@@ -218,6 +244,7 @@ namespace
         void RestartCurrentRound()
         {
             player.coins = 0;
+            roundTime = 0.0f;
             checkpointSpawn = initialSpawn;
             for (auto& coin : coins)
             {
@@ -231,6 +258,11 @@ namespace
             {
                 enemy.alive = true;
                 enemy.vx = enemy.vx < 0.0f ? -RoundEnemySpeed() : RoundEnemySpeed();
+            }
+            for (auto& platform : movingPlatforms)
+            {
+                platform.body.x = (platform.minX + platform.maxX) * 0.5f;
+                platform.vx = std::abs(platform.vx);
             }
             ResetRun();
         }
@@ -248,6 +280,7 @@ namespace
                 return;
             }
 
+            roundTime += dt;
             float direction = 0.0f;
             if (Down(keys, 'A') || Down(keys, VK_LEFT))
             {
@@ -270,14 +303,17 @@ namespace
 
             player.velocity.y = std::min(player.velocity.y + Gravity * dt, 1200.0f);
 
+            UpdateMovingPlatforms(dt);
+            const float previousBottom = player.body.y + player.body.h;
             MovePlayerX(player.velocity.x * dt);
             MovePlayerY(player.velocity.y * dt);
+            ResolveMovingPlatformLanding(previousBottom);
             UpdateEnemies(dt);
             CollectCoins();
             TouchCheckpoints();
             CheckHazards();
 
-            if (exitRect.w > 0.0f && Intersects(player.body, exitRect))
+            if (exitRect.w > 0.0f && AllCoinsCollected() && Intersects(player.body, exitRect))
             {
                 AdvanceRound();
             }
@@ -298,6 +334,8 @@ namespace
             target->Clear(D2D1::ColorF(0x101820));
             DrawBackground(target, brush);
             DrawTiles(target, brush);
+            DrawSpikes(target, brush);
+            DrawMovingPlatforms(target, brush);
             DrawExit(target, brush);
             DrawCheckpoints(target, brush);
             DrawCoins(target, brush);
@@ -318,7 +356,9 @@ namespace
         std::vector<std::string> firstRoundRows;
         std::vector<Coin> coins;
         std::vector<Enemy> enemies;
+        std::vector<Rect> spikes;
         std::vector<Checkpoint> checkpoints;
+        std::vector<MovingPlatform> movingPlatforms;
         Player player;
         Rect exitRect;
         Vec2 initialSpawn;
@@ -328,6 +368,8 @@ namespace
         int height = 0;
         int currentRound = 0;
         float elapsed = 0.0f;
+        float roundTime = 0.0f;
+        float bestRoundTimes[3] = { -1.0f, -1.0f, -1.0f };
         State state = State::Playing;
 
         float RoundEnemySpeed() const
@@ -355,17 +397,17 @@ namespace
                     "................................................................................",
                     "................................................................................",
                     ".................................C..............................................",
-                    "............................########............................................",
+                    "............................########...........M................................",
                     "..............C........................................C.......................",
                     "..........########.................E...............########.....................",
                     "..................................#####.........................................",
-                    "....P..................C............................................X..........",
+                    "....P..................C.........M..........................^.........X..........",
                     "#########..........########................K.................#####...###########",
                     ".........................E.............########.................................",
-                    "......................#####..........................C........E................",
+                    "......................#####........^^^...............C........E................",
                     ".............C.................................############..#####..............",
                     ".........########.............#####.............................................",
-                    ".................................C..................#####......................",
+                    ".................................C........M.........#####......................",
                     ".....K.......................#########.........E...............................",
                     "###########........E..........................#####.............#####..........",
                     "########################....############....############....###################",
@@ -382,17 +424,17 @@ namespace
                     ".............................................................C..................",
                     ".........................................................########...............",
                     "........................C......................................................",
-                    "....................########......................E............................",
+                    "....................########...........M..........E............................",
                     "........C.............................C........#####...............C...........",
                     "....########.....................########.....................########..........",
                     "...................E..........................................................",
-                    "....P............#####...............K...................E...............X.....",
+                    "....P............#####....M..........K...................E............^^.X.....",
                     "#########........................########..............#####..........##########",
                     "......................C........................................................",
-                    "..................########...............E........C............................",
+                    "..................########...............E........C...........M................",
                     "......................................#####....########........E...............",
                     "..........K..................................................#####............",
-                    "......########..........E...........######...........######....................",
+                    "......########....^^^...E...........######...........######....................",
                     "......................#####.......................................######.......",
                     "###############....############....############....############....############",
                     "###############....############....############....############....############",
@@ -463,6 +505,39 @@ namespace
             return solids;
         }
 
+        static bool OverlapsHorizontally(const Rect& a, const Rect& b, float inset = 0.0f)
+        {
+            return a.x + inset < b.x + b.w && a.x + a.w - inset > b.x;
+        }
+
+        bool IsStandingOnPlatform(const MovingPlatform& platform) const
+        {
+            const float feet = player.body.y + player.body.h;
+            return OverlapsHorizontally(player.body, platform.body, 4.0f) &&
+                std::fabs(feet - platform.body.y) <= 6.0f &&
+                player.velocity.y >= -40.0f;
+        }
+
+        void ResolveSolidCarry(float amount)
+        {
+            for (const Rect& tile : NearbySolidTiles(player.body))
+            {
+                if (!Intersects(player.body, tile))
+                {
+                    continue;
+                }
+
+                if (amount > 0.0f)
+                {
+                    player.body.x = tile.x - player.body.w;
+                }
+                else if (amount < 0.0f)
+                {
+                    player.body.x = tile.x + tile.w;
+                }
+            }
+        }
+
         void MovePlayerX(float amount)
         {
             player.body.x += amount;
@@ -508,6 +583,60 @@ namespace
                     player.body.y = tile.y + tile.h;
                 }
                 player.velocity.y = 0.0f;
+            }
+        }
+
+        void UpdateMovingPlatforms(float dt)
+        {
+            for (auto& platform : movingPlatforms)
+            {
+                const bool carryingPlayer = IsStandingOnPlatform(platform);
+                const float oldX = platform.body.x;
+                platform.body.x += platform.vx * dt;
+
+                if (platform.body.x < platform.minX)
+                {
+                    platform.body.x = platform.minX;
+                    platform.vx = std::abs(platform.vx);
+                }
+                else if (platform.body.x > platform.maxX)
+                {
+                    platform.body.x = platform.maxX;
+                    platform.vx = -std::abs(platform.vx);
+                }
+
+                const float movedX = platform.body.x - oldX;
+                if (carryingPlayer && std::fabs(movedX) > 0.0f)
+                {
+                    player.body.x += movedX;
+                    ResolveSolidCarry(movedX);
+                }
+            }
+        }
+
+        void ResolveMovingPlatformLanding(float previousBottom)
+        {
+            if (player.velocity.y < 0.0f)
+            {
+                return;
+            }
+
+            for (const auto& platform : movingPlatforms)
+            {
+                const float currentBottom = player.body.y + player.body.h;
+                if (!OverlapsHorizontally(player.body, platform.body, 4.0f))
+                {
+                    continue;
+                }
+
+                if (previousBottom <= platform.body.y + 8.0f && currentBottom >= platform.body.y)
+                {
+                    player.body.y = platform.body.y - player.body.h;
+                    player.velocity.y = 0.0f;
+                    player.onGround = true;
+                    player.jumpsUsed = 0;
+                    break;
+                }
             }
         }
 
@@ -585,6 +714,15 @@ namespace
 
         void CheckHazards()
         {
+            for (const Rect& spike : spikes)
+            {
+                if (Intersects(player.body, spike))
+                {
+                    DamagePlayer();
+                    return;
+                }
+            }
+
             for (auto& enemy : enemies)
             {
                 if (!enemy.alive || !Intersects(player.body, enemy.body))
@@ -619,6 +757,7 @@ namespace
 
         void AdvanceRound()
         {
+            RecordBestTime();
             if (currentRound + 1 >= RoundCount())
             {
                 state = State::Won;
@@ -626,6 +765,20 @@ namespace
             }
 
             LoadRound(currentRound + 1);
+        }
+
+        bool AllCoinsCollected() const
+        {
+            return player.coins >= static_cast<int>(coins.size());
+        }
+
+        void RecordBestTime()
+        {
+            const int index = std::clamp(currentRound, 0, RoundCount() - 1);
+            if (bestRoundTimes[index] < 0.0f || roundTime < bestRoundTimes[index])
+            {
+                bestRoundTimes[index] = roundTime;
+            }
         }
 
         void DrawBackground(ID2D1HwndRenderTarget* target, ID2D1SolidColorBrush* brush)
@@ -677,6 +830,42 @@ namespace
             }
         }
 
+        void DrawSpikes(ID2D1HwndRenderTarget* target, ID2D1SolidColorBrush* brush)
+        {
+            for (const Rect& spike : spikes)
+            {
+                brush->SetColor(D2D1::ColorF(0x7C2D12));
+                Rect base = { spike.x, spike.y + spike.h - 6.0f, spike.w, 6.0f };
+                target->FillRectangle(ToD2D(base, camera), brush);
+
+                brush->SetColor(D2D1::ColorF(0xF97316));
+                const float segment = spike.w / 3.0f;
+                for (int i = 0; i < 3; ++i)
+                {
+                    const float x0 = spike.x + i * segment - camera.x;
+                    const float y0 = spike.y + spike.h - camera.y;
+                    const float x1 = spike.x + (i + 0.5f) * segment - camera.x;
+                    const float y1 = spike.y - camera.y;
+                    const float x2 = spike.x + (i + 1.0f) * segment - camera.x;
+                    target->DrawLine(D2D1::Point2F(x0, y0), D2D1::Point2F(x1, y1), brush, 2.0f);
+                    target->DrawLine(D2D1::Point2F(x1, y1), D2D1::Point2F(x2, y0), brush, 2.0f);
+                    target->DrawLine(D2D1::Point2F(x2, y0), D2D1::Point2F(x0, y0), brush, 2.0f);
+                }
+            }
+        }
+
+        void DrawMovingPlatforms(ID2D1HwndRenderTarget* target, ID2D1SolidColorBrush* brush)
+        {
+            for (const auto& platform : movingPlatforms)
+            {
+                brush->SetColor(D2D1::ColorF(0xF59E0B));
+                target->FillRoundedRectangle(D2D1::RoundedRect(ToD2D(platform.body, camera), 5.0f, 5.0f), brush);
+                brush->SetColor(D2D1::ColorF(0xFFFBEB));
+                Rect stripe = { platform.body.x + 8.0f, platform.body.y + 4.0f, platform.body.w - 16.0f, 3.0f };
+                target->FillRectangle(ToD2D(stripe, camera), brush);
+            }
+        }
+
         void DrawCoins(ID2D1HwndRenderTarget* target, ID2D1SolidColorBrush* brush)
         {
             for (const auto& coin : coins)
@@ -718,9 +907,10 @@ namespace
 
             const auto rect = ToD2D(exitRect, camera);
             const RoundStyle style = Style();
-            brush->SetColor(D2D1::ColorF(style.exit));
+            const bool unlocked = AllCoinsCollected();
+            brush->SetColor(unlocked ? D2D1::ColorF(style.exit) : D2D1::ColorF(0x475569));
             target->FillRoundedRectangle(D2D1::RoundedRect(rect, 8.0f, 8.0f), brush);
-            brush->SetColor(D2D1::ColorF(style.exitGlow));
+            brush->SetColor(unlocked ? D2D1::ColorF(style.exitGlow) : D2D1::ColorF(0xCBD5E1));
             target->DrawRoundedRectangle(D2D1::RoundedRect(rect, 8.0f, 8.0f), brush, 3.0f);
         }
 
@@ -756,23 +946,47 @@ namespace
             std::wstringstream hud;
             hud << L"Round: " << currentRound + 1 << L"/" << RoundCount()
                 << L"    Lives: " << player.lives
-                << L"    Coins: " << player.coins << L"/" << coins.size();
+                << L"    Coins: " << player.coins << L"/" << coins.size()
+                << L"    Exit: " << (AllCoinsCollected() ? L"Unlocked" : L"Locked");
 
             brush->SetColor(D2D1::ColorF(0xF8FAFC));
             const std::wstring hudText = hud.str();
             target->DrawTextW(hudText.c_str(), static_cast<UINT32>(hudText.size()), textFormat,
-                D2D1::RectF(22.0f, 18.0f, 520.0f, 64.0f), brush);
+                D2D1::RectF(22.0f, 18.0f, 980.0f, 64.0f), brush);
+
+            std::wstringstream timer;
+            timer.setf(std::ios::fixed);
+            timer.precision(1);
+            timer << L"Time: " << roundTime << L"s";
+            if (bestRoundTimes[currentRound] >= 0.0f)
+            {
+                timer << L"    Best: " << bestRoundTimes[currentRound] << L"s";
+            }
+
+            const std::wstring timerText = timer.str();
+            target->DrawTextW(timerText.c_str(), static_cast<UINT32>(timerText.size()), textFormat,
+                D2D1::RectF(22.0f, 54.0f, 720.0f, 96.0f), brush);
 
             if (state == State::Won || state == State::GameOver)
             {
                 brush->SetColor(D2D1::ColorF(0x000000, 0.55f));
                 target->FillRectangle(D2D1::RectF(0, 0, WindowWidth, WindowHeight), brush);
 
-                const std::wstring message = state == State::Won
-                    ? L"You finished all rounds! Press R to restart."
-                    : L"Game Over. Press R to restart.";
+                std::wstringstream message;
+                if (state == State::Won)
+                {
+                    message.setf(std::ios::fixed);
+                    message.precision(1);
+                    message << L"You finished all rounds. Final round time: "
+                        << roundTime << L"s. Press R to restart.";
+                }
+                else
+                {
+                    message << L"Game Over. Press R to restart.";
+                }
                 brush->SetColor(D2D1::ColorF(0xFFFFFF));
-                target->DrawTextW(message.c_str(), static_cast<UINT32>(message.size()), textFormat,
+                const std::wstring messageText = message.str();
+                target->DrawTextW(messageText.c_str(), static_cast<UINT32>(messageText.size()), textFormat,
                     D2D1::RectF(330.0f, 320.0f, 980.0f, 390.0f), brush);
             }
         }
