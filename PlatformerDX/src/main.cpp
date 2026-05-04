@@ -162,6 +162,7 @@ namespace
             currentRound = std::clamp(index, 0, RoundCount() - 1);
             player.coins = 0;
             roundTime = 0.0f;
+            storyBannerTimer = 3.5f;
             LoadRows(currentRound == 0 ? firstRoundRows : BuiltInRound(currentRound));
         }
 
@@ -337,6 +338,7 @@ namespace
             roundTime += dt;
             totalRunTime += dt;
             jumpAnimTimer = std::max(0.0f, jumpAnimTimer - dt);
+            storyBannerTimer = std::max(0.0f, storyBannerTimer - dt);
             UpdateJumpParticles(dt);
             float direction = 0.0f;
             if (Down(keys, 'A') || Down(keys, VK_LEFT))
@@ -401,6 +403,7 @@ namespace
             DrawJumpParticles(target, brush);
             DrawPlayer(target, brush);
             DrawHud(target, textFormat, brush);
+            DrawStoryBanner(target, textFormat, brush);
         }
 
     private:
@@ -433,6 +436,7 @@ namespace
         float totalRunTime = 0.0f;
         float finalCompletionTime = -1.0f;
         float jumpAnimTimer = 0.0f;
+        float storyBannerTimer = 0.0f;
         float bestRoundTimes[3] = { -1.0f, -1.0f, -1.0f };
         float bestGameTime = -1.0f;
         int selectedPlayerColor = 0;
@@ -467,6 +471,38 @@ namespace
         std::wstring BestScorePath() const
         {
             return L"best_time.txt";
+        }
+
+        std::wstring StoryIntro() const
+        {
+            return L"The Sky Core was shattered, and the floating city is collapsing. "
+                L"Collect every energy coin, reopen each gate, and rebuild the core before the storm reaches the heart tower.";
+        }
+
+        std::wstring RoundStoryTitle(int index) const
+        {
+            static const wchar_t* titles[] = {
+                L"District One: Broken Rooflines",
+                L"District Two: Overgrown Lift Shafts",
+                L"District Three: The Heart Tower"
+            };
+            return titles[std::clamp(index, 0, RoundCount() - 1)];
+        }
+
+        std::wstring RoundStoryText(int index) const
+        {
+            static const wchar_t* texts[] = {
+                L"The first fragments are scattered across the outer blocks. Restore power to the first gate.",
+                L"The storm has twisted the transport shafts. Stay moving and recover the second charge.",
+                L"The final chamber is unstable. One last route remains before the city goes dark."
+            };
+            return texts[std::clamp(index, 0, RoundCount() - 1)];
+        }
+
+        std::wstring EndingStory() const
+        {
+            return L"The Sky Core is whole again. Light returns to the city, the machines restart, "
+                L"and the last storm front breaks apart above the tower.";
         }
 
         void LoadBestScore()
@@ -980,6 +1016,10 @@ namespace
             target->DrawTextW(subtitle.c_str(), static_cast<UINT32>(subtitle.size()), textFormat,
                 D2D1::RectF(260.0f, 185.0f, 1020.0f, 235.0f), brush);
 
+            const std::wstring introStory = StoryIntro();
+            target->DrawTextW(introStory.c_str(), static_cast<UINT32>(introStory.size()), textFormat,
+                D2D1::RectF(220.0f, 255.0f, 1060.0f, 335.0f), brush);
+
             std::wstringstream bestScoreText;
             bestScoreText.setf(std::ios::fixed);
             bestScoreText.precision(1);
@@ -1023,6 +1063,28 @@ namespace
             target->DrawTextW(buttonText.c_str(), static_cast<UINT32>(buttonText.size()), textFormat,
                 D2D1::RectF(button.x, button.y + 16.0f, button.x + button.w, button.y + button.h), brush);
             textFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        }
+
+        void DrawStoryBanner(ID2D1HwndRenderTarget* target, IDWriteTextFormat* textFormat, ID2D1SolidColorBrush* brush)
+        {
+            if (storyBannerTimer <= 0.0f || state != State::Playing)
+            {
+                return;
+            }
+
+            const float alpha = std::min(1.0f, storyBannerTimer / 0.8f);
+            brush->SetColor(D2D1::ColorF(0x020617, 0.72f * alpha));
+            target->FillRoundedRectangle(
+                D2D1::RoundedRect(D2D1::RectF(140.0f, 110.0f, 1140.0f, 220.0f), 16.0f, 16.0f), brush);
+
+            brush->SetColor(D2D1::ColorF(0xE2E8F0, alpha));
+            const std::wstring title = RoundStoryTitle(currentRound);
+            target->DrawTextW(title.c_str(), static_cast<UINT32>(title.size()), textFormat,
+                D2D1::RectF(180.0f, 130.0f, 1100.0f, 165.0f), brush);
+
+            const std::wstring text = RoundStoryText(currentRound);
+            target->DrawTextW(text.c_str(), static_cast<UINT32>(text.size()), textFormat,
+                D2D1::RectF(180.0f, 170.0f, 1100.0f, 215.0f), brush);
         }
 
         void DrawTiles(ID2D1HwndRenderTarget* target, ID2D1SolidColorBrush* brush)
@@ -1269,7 +1331,7 @@ namespace
                     {
                         message << L"none";
                     }
-                    message << L". Press R to restart.";
+                    message << L". " << EndingStory() << L" Press R to restart.";
                 }
                 else
                 {

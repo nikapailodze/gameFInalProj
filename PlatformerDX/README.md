@@ -11,6 +11,7 @@ A small 2D platformer final-project game built with C++ and Direct2D, part of th
 - Three rounds with different colors, layouts, and increasing enemy speed
 - Round timer with per-round best-time tracking
 - Saved best total completion time (`best_time.txt`)
+- Story-driven intro, per-round mission banners, and ending text
 - Text level loading from `levels/level1.txt`
 - Camera follow and HUD
 
